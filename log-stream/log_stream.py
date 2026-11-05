@@ -197,6 +197,146 @@ class CheckRun:
         return st == 200
 
 
+def _group_of(pid: int) -> int:
+    """The process group a pid belongs to, falling back to the pid itself.
+
+    WHY THIS IS NOT `proc.pid`. `start_new_session=True` makes the CHILD a session and group
+    leader, so `proc.pid == proc's pgid` - that part was right. What it missed is that the
+    child is `bash -c "<the command>"`, and bash starts each simple command in a NEW PROCESS
+    GROUP when it is not interactive. Measured on the reproduction:
+
+        python(step)  pid=530069  pgid=530067
+        bash -c       pid=530067  pgid=530067
+        child         pid=530079  pgid=530079    <- its own group
+
+    So killpg(proc.pid) signalled bash's group, bash died, and the grandchild - in a group of
+    its own, trapping SIGTERM - kept running. The handler logged "signal 15", the step
+    exited, and qemu's stand-in was still there; that is the whole of macos15 run
+    42000179043, where a cancel was accepted twice and the step ran nine more minutes.
+
+    Reading the real group with getpgid is the difference between signalling the pid we
+    happen to hold and signalling the group the work is actually in. The fallback covers the
+    race where the child has exited between the call and the lookup.
+    """
+    try:
+        return os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        return pid
+
+
+def _descendants(root: int) -> list[int]:
+    """Every pid below `root`, via /proc. Empty when the tree is already gone.
+
+    WHY THIS EXISTS ON TOP OF killpg. `start_new_session=True` makes the DIRECT child a
+    session and group leader, so killing its group was assumed to reach everything. Measured
+    on a reproduction built to match the runner's own process tree:
+
+        python(step)  pid=530209  pgid=530207     <- not the leader: an outer bash holds that
+        child         pid=530219  pgid=530219     <- its own group
+
+    A killpg on the number `Popen` returned signalled a group that the work had already
+    stepped out of. That is macos15 run 42000179043: the handler logged "signal 15", the
+    step exited, and the guest was still booting nine minutes later.
+
+    Reading the process table is the only answer that does not depend on which of bash,
+    dash or the kernel created a group. Every descendant is found by ppid, from the root
+    down, and each group they belong to is signalled as well.
+    """
+    children: dict[int, list[int]] = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", encoding="utf-8") as fh:
+                # comm can contain spaces and brackets; the fields after the LAST ')' are
+                # state, ppid, pgrp, ...
+                fields = fh.read().rsplit(")", 1)[-1].split()
+            ppid = int(fields[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        children.setdefault(ppid, []).append(int(entry))
+
+    found: list[int] = []
+    stack = [root]
+    while stack:
+        pid = stack.pop()
+        for child in children.get(pid, []):
+            if child not in found:
+                found.append(child)
+                stack.append(child)
+    return found
+
+
+def _kill_tree_of(pid: int, *, grace: float = 2.0) -> None:
+    """Stop a command and everything it started.
+
+    TWO PASSES, BECAUSE ONE IS NOT ENOUGH. The first signals the process group that `pid`
+    is actually in (read with getpgid, not assumed to be `pid`), which covers the ordinary
+    case where the child stayed in its leader's group. The second walks the process table
+    for ppid descendants, which covers the case measured above: a grandchild that bash put
+    in a group of its own.
+
+    SIGTERM FIRST SO A GUEST CAN FLUSH. qemu and ffmpeg handle it; a disk killed mid-write
+    repairs itself on the next boot, and that is a worse artifact than a slower cancel.
+    """
+    targets = {pid}
+    descendants = _descendants(pid)
+    targets.update(descendants)
+
+    groups: set[int] = set()
+    for target in targets:
+        try:
+            groups.add(os.getpgid(target))
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    for group in groups:
+        try:
+            os.killpg(group, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    for target in targets:
+        try:
+            os.kill(target, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    deadline = time.time() + grace
+    while time.time() < deadline:
+        if not any(_exists(p) for p in targets):
+            return
+        time.sleep(0.05)
+
+    # SIGKILL, TO EVERY GROUP AND EVERY PID THAT IS LEFT. Unconditional: the immediate
+    # child dies on SIGTERM and its children may not, which is the case that matters.
+    for _ in range(2):
+        alive_now = [p for p in targets if _exists(p)]
+        if not alive_now:
+            return
+        for target in alive_now:
+            try:
+                os.kill(target, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                os.killpg(os.getpgid(target), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        time.sleep(0.1)
+
+
+def _exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def main():
     p = argparse.ArgumentParser(
         description="Run a command and stream its output into a GitHub check run.")
@@ -230,8 +370,29 @@ def main():
     cr = CheckRun(token, repo, sha, name, args.interval, min(args.max_bytes, MAX_TEXT))
     if not cr.start():
         # Streaming is a convenience, not the point of the build. Run the command anyway.
+        #
+        # BUT NOT WITH subprocess.call. That was here, and it is why a cancel was ignored on
+        # macos15 run 42000179043: when the check run could not be created the step fell
+        # through to `subprocess.call(cmd)`, which installs no signal handler, does not put
+        # the child in its own session, and forwards nothing. The runner's SIGTERM killed
+        # this process and left `bash -c "<the command>"` and qemu running - exactly the
+        # failure the signal code below exists to prevent, on the one path that skipped it.
+        #
+        # THE DEGRADED PATH HAS TO BE AS CANCELLABLE AS THE STREAMING ONE. A build whose log
+        # cannot be published is still a build somebody will want to stop.
         print("log-stream: continuing WITHOUT streaming", file=sys.stderr)
-        return subprocess.call(cmd)
+        plain = subprocess.Popen(cmd, start_new_session=True)
+
+        def _kill_plain(signum, _frame):
+            print(f"log-stream: signal {signum}, stopping the command's process group",
+                  file=sys.stderr, flush=True)
+            _kill_tree_of(plain.pid)
+            os._exit(143)
+
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, _kill_plain)
+
+        return plain.wait()
 
     # Forward the child's output to this step's log as well, so the Actions log is unchanged.
     #
@@ -287,29 +448,7 @@ def main():
     def _kill_tree(signum, frame):
         print(f"log-stream: signal {signum}, stopping the command's process group",
               file=sys.stderr, flush=True)
-        # `proc.pid` IS THE GROUP ID. start_new_session=True makes the child a session and
-        # group leader, so its pid and its pgid are the same number - asking the kernel for
-        # getpgid() can return the group after a race where the child has already exited,
-        # and the answer is known here without asking.
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-        # GIVE IT FIVE SECONDS, THEN STOP ASKING.
-        #
-        # qemu and ffmpeg handle SIGTERM; a shell loop that ignores it does not. Five
-        # seconds is long enough for the first and short enough that the second cannot
-        # hold the step open - which is the whole complaint this function exists to fix.
-        deadline = time.time() + 5.0
-        while time.time() < deadline:
-            if proc.poll() is not None:
-                break
-            time.sleep(0.1)
-        if proc.poll() is None:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
+        _kill_tree_of(proc.pid)
         # THE STREAMER EXITS, WHICH IS WHAT LETS THE STEP FINISH. Exiting through the
         # normal path instead would run cr.finish("failure") and report a cancel as a
         # build failure.
