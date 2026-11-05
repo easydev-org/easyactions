@@ -1,0 +1,66 @@
+name: 'Stream build output to a check run'
+description: >-
+  Publish a command's output into a GitHub check run while it runs, so a reader with a token can
+  follow the build live. The Actions log is not readable until the step finishes; a check run's
+  output.text is.
+author: easydev-org
+branding:
+  icon: activity
+  color: blue
+
+inputs:
+  command:
+    description: >-
+      The command to run and stream. Passed to the shell as-is.
+    required: true
+  token:
+    description: >-
+      Token used to create and update the check run. The caller passes its workflow token.
+      It cannot be implicit: a composite action does not inherit the caller's environment, and
+      this file has no access to the github context at all — naming that context in an expression
+      here is a template error the runner refuses to load, even inside a description.
+    required: true
+  name:
+    description: >-
+      Name of the check run. Defaults to the job name, so one step per job needs no configuration.
+    required: false
+    default: ''
+  interval:
+    description: >-
+      Seconds between updates. Every line would be one API call per line — far too many; a build
+      that prints a thousand lines a second would be a thousand requests a second.
+    required: false
+    default: '5'
+  max_bytes:
+    description: >-
+      Character cap for the published text. GitHub refuses anything above 65535, so this is capped
+      there; the newest lines are kept and the oldest are dropped with a note.
+    required: false
+    default: '65535'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: stream output
+      shell: bash
+      env:
+        # The token arrives as an input, because neither the caller's env nor the `github` context
+        # reaches this file.
+        GITHUB_TOKEN: ${{ inputs.token }}
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_NAME: ${{ inputs.name }}
+        INPUT_INTERVAL: ${{ inputs.interval }}
+        INPUT_MAX_BYTES: ${{ inputs.max_bytes }}
+      run: |
+        set -euo pipefail
+        # The script sits IN the action's own directory. dirname would step out of it, which is
+        # how the first version pointed at a file that does not exist — and then reported it as an
+        # exit code rather than a missing path, which took a log dig to find.
+        script="$GITHUB_ACTION_PATH/log_stream.py"
+        if [ ! -f "$script" ]; then
+          echo "log-stream: $script is missing from the action checkout" >&2
+          exit 2
+        fi
+        args=(--interval "$INPUT_INTERVAL" --max-bytes "$INPUT_MAX_BYTES")
+        if [ -n "${INPUT_NAME}" ]; then args+=(--name "$INPUT_NAME"); fi
+        python3 "$script" "${args[@]}" -- bash -c "$INPUT_COMMAND"
