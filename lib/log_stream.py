@@ -427,12 +427,30 @@ def main():
                             text=True, bufsize=1, errors='replace',
                             start_new_session=True)
 
-    # SIGNALS ARRIVING DURING THE RUN, AND SIGNALS ARRIVING AT ALL.
+    # THE HANDLER IS INSTALLED, AND ON A GITHUB-RUNNER CONTAINER IT NEVER RUNS.
     #
-    # THREE SEPARATE THINGS WERE WRONG, and each one alone was enough to make a cancel
-    # look like it did nothing:
+    # THIS PARAGRAPH IS THE MOST IMPORTANT ONE IN THE FILE, because the code below looks
+    # like it works and does not. Measured with a probe that trapped all 28 catchable
+    # signals and printed the number of each one that arrived (run 42015366800):
     #
-    #   SIGTERM reached this process and called proc.terminate() - one PID. See above.
+    #     alive 38 at 11:02:59      <- last line before the cancel
+    #     CAUGHT CHLD x 1144        <- the only signal that ever fired
+    #     (no TERM, no INT, no HUP, no anything else)
+    #
+    # `context canceled` appears in the step's log, the container is removed, and no
+    # catchable signal was ever delivered. The runner escalates to SIGKILL, which cannot be
+    # trapped - so a handler is, in that environment, dead code that reads like working
+    # code. The 76 seconds between a cancel request and the container's removal is the
+    # runner's own grace period, not something this process controls.
+    #
+    # What the handler IS still worth: a runner that signals politely (a self-hosted one, a
+    # future runner that behaves differently, or `docker stop` with its default SIGTERM)
+    # gets a clean shutdown, and the process group handling below is what makes that clean
+    # shutdown reach the grandchildren. It just cannot be relied on where these runs happen.
+    #
+    # THE HISTORY OF THIS BLOCK, kept because each line was a real failure:
+    #
+    #   SIGTERM reached this process and called proc.terminate() - one PID, not the tree
     #
     #   SIGINT is what a cancel sometimes arrives as, and nothing handled it, so Python
     #   turned it into KeyboardInterrupt inside the `for line in proc.stdout` loop - which
@@ -442,9 +460,11 @@ def main():
     #   touching the child at all - the grandchild is orphaned onto PID 1 and runs to its
     #   own timeout.
     #
-    # All three now do the same thing: kill the child's whole process group, then this
-    # process. SIGKILL follows SIGTERM because a qemu that is mid-write ignores polite
-    # requests, and a cancelled step must not wait for one.
+    # IF A CANCEL MUST BE FAST, IT CANNOT BE A SIGNAL HANDLER. The only mechanism that
+    # survives SIGKILL is polling: this process asking the API whether its run is still
+    # wanted, every few seconds, and exiting itself when the answer changes. That is not
+    # implemented - these runs tolerate a 76-second cancel - but it is the shape any future
+    # attempt has to take, and knowing that is cheaper than rediscovering it.
     def _kill_tree(signum, frame):
         print(f"log-stream: signal {signum}, stopping the command's process group",
               file=sys.stderr, flush=True)

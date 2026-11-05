@@ -56,7 +56,7 @@ runs:
         # The script sits IN the action's own directory. dirname would step out of it, which is
         # how the first version pointed at a file that does not exist — and then reported it as an
         # exit code rather than a missing path, which took a log dig to find.
-        script="$GITHUB_ACTION_PATH/log_stream.py"
+        script="$GITHUB_ACTION_PATH/../lib/log_stream.py"
         if [ ! -f "$script" ]; then
           echo "log-stream: $script is missing from the action checkout" >&2
           exit 2

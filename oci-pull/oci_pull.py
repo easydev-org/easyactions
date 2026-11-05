@@ -190,12 +190,41 @@ class Registry:
                     if have and status != 206:
                         log("  the registry ignored the Range; starting over")
                         have = 0
+                    # PROGRESS, BECAUSE SILENCE ON A MULTI-GIGABYTE PULL IS
+                    # INDISTINGUISHABLE FROM A HANG.
+                    #
+                    # This loop printed nothing until it finished, so the macOS stages - which
+                    # pull a 28 GiB disk - spent ten to twenty minutes with no output at all.
+                    # That is the same complaint the rest of this repository answers with a
+                    # heartbeat: freebsd's bake prints "120s, disk 3678 MiB" every two
+                    # minutes, windows prints "waiting 431s: 380 frames", and this printed
+                    # one line at the end.
+                    #
+                    # EVERY 64 MiB OR 10 SECONDS, whichever comes first, so a slow link and a
+                    # fast one both show movement rather than a number that changes too
+                    # rarely to read as alive.
+                    written = have
+                    last_report = 0.0
+                    last_mib = -1
                     with open(part, mode) as fh:
                         while True:
                             chunk = resp.read(1 << 20)
                             if not chunk:
                                 break
                             fh.write(chunk)
+                            written += len(chunk)
+                            mib = written >> 20
+                            now = time.time()
+                            if mib != last_mib and (mib % 64 == 0
+                                                    or now - last_report >= 10.0):
+                                last_mib = mib
+                                last_report = now
+                                total_mib = expected >> 20 if expected else 0
+                                if total_mib:
+                                    log(f"  {mib} MiB / {total_mib} MiB "
+                                        f"({mib * 100 // max(total_mib, 1)}%)")
+                                else:
+                                    log(f"  {mib} MiB")
             except (urllib.error.URLError, OSError, TimeoutError) as exc:
                 log(f"  attempt {attempt} failed: {exc}")
                 if attempt == ATTEMPTS:

@@ -29,6 +29,19 @@ inputs:
     required: false
     default: 'true'
 
+  token:
+    description: >-
+      Token used to create the check run the output is published to. A composite action does
+      not inherit the caller's environment and cannot read the `github` context, so this has
+      to be passed. Without it the check still runs; its output just stays in the Actions log.
+    required: false
+    default: ''
+
+  check-name:
+    description: 'Name of the check run the output is published to.'
+    required: false
+    default: 'runner-check'
+
 runs:
   using: 'composite'
   steps:
@@ -38,4 +51,20 @@ runs:
         INPUT_KVM: ${{ inputs.kvm }}
         INPUT_DISK_GB: ${{ inputs.disk-gb }}
         INPUT_PRUNE: ${{ inputs.prune }}
-      run: python3 "$GITHUB_ACTION_PATH/runner_check.py"
+        INPUT_TOKEN: ${{ inputs.token }}
+        GITHUB_TOKEN: ${{ inputs.token || github.token }}
+      # STREAMED, FOR THE SAME REASON THE OTHERS ARE: the output has to be readable while
+      # the step runs. This one is short - a few seconds of `df` and an open of /dev/kvm -
+      # but "short" is not a property this action controls: `docker system prune` inside it
+      # has been measured at 984 seconds, and a prune that hangs with no output is the
+      # failure this action was written to report.
+      run: |
+        set -euo pipefail
+        if [ -z "$INPUT_TOKEN" ]; then
+          # NO TOKEN, NO CHECK RUN. Run the check directly; its output goes to the step log,
+          # which is what every caller had before this existed.
+          exec python3 "$GITHUB_ACTION_PATH/runner_check.py"
+        fi
+        python3 "$GITHUB_ACTION_PATH/../lib/log_stream.py" \
+          --name "${{ inputs.check-name }}" --interval 5 \
+          -- python3 "$GITHUB_ACTION_PATH/runner_check.py"

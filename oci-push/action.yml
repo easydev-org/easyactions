@@ -57,6 +57,11 @@ inputs:
     required: false
     default: ''
 
+  check-name:
+    description: 'Name of the check run the progress is published to'
+    required: false
+    default: 'oci-push'
+
 outputs:
   tag:
     description: 'The tag that was pushed.'
@@ -81,4 +86,15 @@ runs:
         INPUT_MEDIA_TYPE: ${{ inputs.media-type }}
         INPUT_ANNOTATIONS: ${{ inputs.annotations }}
         GITHUB_TOKEN: ${{ inputs.token || github.token }}
-      run: python3 "$GITHUB_ACTION_PATH/oci_push.py"
+      # STREAMED, BECAUSE A SILENT TRANSFER IS INDISTINGUISHABLE FROM A HANG.
+      #
+      # This action moves 28 GiB in the macOS stages and printed nothing until it
+      # finished, so a running job had no output at all - the Actions log cannot be
+      # read until the step ends, and there was nothing else to read. log_stream.py
+      # publishes the same lines to a check run while they happen.
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/../lib/log_stream.py" \
+          --name "${{ inputs.check-name }}" --interval 20 \
+          -- python3 "$GITHUB_ACTION_PATH/oci_push.py"
+
