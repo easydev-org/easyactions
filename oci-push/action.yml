@@ -9,7 +9,9 @@ branding:
 
 inputs:
   path:
-    description: 'The file to push.'
+    description: >-
+      The file to push. A glob is allowed and must match exactly one file, for artifacts whose
+      name the producer chooses - a packer that renames .tar.zst to .7z is one.
     required: true
   tag:
     description: >-

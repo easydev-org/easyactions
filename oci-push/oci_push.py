@@ -54,6 +54,43 @@ def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def resolve(path: str) -> str:
+    """The one file `path` names. A glob is allowed, and must match exactly one file.
+
+    AN ARTIFACT'S NAME IS NOT ALWAYS THE CALLER'S TO CHOOSE. android/15/bake.py is told
+    `--out out/android15.tar.zst` and its packer renames the result to `out/android15.7z`,
+    because 7z cannot write a .tar.zst. The workflow that called it read the name back with
+
+        AVD=$(ls out/android15.* | head -1)
+
+    and an action given a literal path therefore pushed nothing:
+
+        [oci-push] FAILED: no file at out/android15.tar.zst
+
+    A GLOB THAT MATCHES TWO FILES IS AN ERROR, NOT A PICK. `head -1` in the shell silently
+    took whichever sorted first, and for a disk that is the difference between publishing
+    this build and publishing a stale one beside it.
+    """
+    import glob as globmod
+
+    if not any(ch in path for ch in "*?["):
+        if not os.path.isfile(path):
+            raise Failed(f"no file at {path}")
+        return path
+
+    matches = sorted(globmod.glob(path))
+    matches = [m for m in matches if os.path.isfile(m)]
+    if not matches:
+        raise Failed(f"{path} matched no file")
+    if len(matches) > 1:
+        raise Failed(
+            f"{path} matched {len(matches)} files; name one of them:\n"
+            + "\n".join(f"  {m}" for m in matches[:10])
+        )
+    log(f"{path} -> {matches[0]}")
+    return matches[0]
+
+
 def utc_stamp() -> str:
     return time.strftime("%Y%m%d-%H%M%S", time.gmtime())
 
@@ -170,6 +207,7 @@ def main() -> int:
     try:
         if not path:
             raise Failed("path is required")
+        path = resolve(path)
         if not repository:
             raise Failed(
                 "repository is required: pass it, or run under GitHub Actions where "
