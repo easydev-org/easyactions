@@ -124,10 +124,36 @@ def oras() -> str:
 
     log(f"installing oras {version} from {url}")
     archive = "/tmp/oras.tar.gz"
-    try:
-        urllib.request.urlretrieve(url, archive)
-    except (urllib.error.URLError, OSError) as exc:
-        raise Failed(f"could not download oras: {exc}") from exc
+    # A TRANSIENT 5xx IS NOT A REASON TO FAIL A BAKE.
+    #
+    # GitHub's release CDN answered 504 twice in one afternoon - freebsd run 41999514167 and
+    # nixos derive (cosmic) in 41997535125 - and both bakes had already finished, one of them
+    # after an hour. The artifact was built, cleaned and compressed, and the job failed on a
+    # download of a 5 MB tool that has nothing to do with it.
+    #
+    # Four attempts with a growing pause covers the shape of the failure: a CDN edge that is
+    # briefly unable to serve and then is. A 404 is NOT retried - that means the URL is wrong
+    # and waiting will not fix it - so HTTPError is inspected rather than caught wholesale.
+    import time as _time
+
+    last = None
+    for attempt in range(4):
+        try:
+            urllib.request.urlretrieve(url, archive)
+            last = None
+            break
+        except urllib.error.HTTPError as exc:
+            last = exc
+            if exc.code < 500:
+                raise Failed(f"could not download oras: {exc}") from exc
+        except (urllib.error.URLError, OSError) as exc:
+            last = exc                     # connection reset, DNS, timeout: worth retrying
+        if attempt < 3:
+            pause = 2 ** attempt * 5       # 5s, 10s, 20s
+            log(f"  download failed ({last}); retrying in {pause}s")
+            _time.sleep(pause)
+    if last is not None:
+        raise Failed(f"could not download oras after 4 attempts: {last}") from last
 
     result = subprocess.run(["tar", "-xzf", archive, "-C", target, "oras"],
                             capture_output=True, text=True)
