@@ -1,0 +1,83 @@
+name: selftest
+
+# Every action here is run against the cases it exists to catch. An action whose failure
+# path has never been executed is an action whose failure path does not work - and these
+# are the actions whose failures matter most, because they run before the expensive part.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  runner-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: kvm is present on a runner
+        uses: ./runner-check
+        with:
+          kvm: true
+          disk-gb: 1
+
+      - name: a job that does not boot anything skips kvm
+        uses: ./runner-check
+        with:
+          kvm: false
+          disk-gb: 1
+
+      - name: too much disk fails, and says how much is there
+        id: short
+        continue-on-error: true
+        uses: ./runner-check
+        with:
+          kvm: false
+          disk-gb: 99999
+          prune: false
+
+      - name: that failure was a failure
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.short.outcome }}" != "failure" ]; then
+            echo "asking for 99999 GB did not fail the step"; exit 1
+          fi
+          echo "runner-check refused an impossible disk request, as it should"
+
+  log-stream:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: a command streams and succeeds
+        uses: ./log-stream
+        with:
+          token: ${{ github.token }}
+          name: selftest-log-stream
+          interval: "2"
+          command: |
+            set -euo pipefail
+            echo "one"
+            echo "two"
+            exit 0
+
+      - name: a failing command fails the step
+        id: boom
+        continue-on-error: true
+        uses: ./log-stream
+        with:
+          token: ${{ github.token }}
+          name: selftest-log-stream-failure
+          interval: "2"
+          command: |
+            set -euo pipefail
+            echo "about to fail"
+            exit 7
+
+      - name: that failure was a failure
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.boom.outcome }}" != "failure" ]; then
+            echo "a command that exited 7 did not fail the step"; exit 1
+          fi
+          echo "log-stream propagated the exit code, as it should"

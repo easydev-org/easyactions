@@ -1,0 +1,41 @@
+name: 'Runner check'
+description: >-
+  Assert the two things every VM job here needs before it starts: /dev/kvm it can actually
+  open, and enough free disk after pruning what is safe to prune. Fails with a message that
+  names the fix rather than a timeout twenty minutes later.
+author: easydev-org
+branding:
+  icon: hard-drive
+  color: purple
+
+inputs:
+  kvm:
+    description: >-
+      Require /dev/kvm. Set false for a job that only moves files - the pull and publish
+      stages do not boot anything.
+    required: false
+    default: 'true'
+  disk-gb:
+    description: >-
+      Free GB this job needs. 0 skips the check. Large enough for the working copy, the
+      compressed result and the recording; not the disk's virtual size, which is why the
+      number differs per stage.
+    required: false
+    default: '0'
+  prune:
+    description: >-
+      Delete what is safe to delete when the space is short. The runner images carry the
+      .NET SDK, the Android SDK, GHC and CodeQL whether or not a job uses them.
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: check
+      shell: bash
+      env:
+        INPUT_KVM: ${{ inputs.kvm }}
+        INPUT_DISK_GB: ${{ inputs.disk-gb }}
+        INPUT_PRUNE: ${{ inputs.prune }}
+      run: python3 "$GITHUB_ACTION_PATH/runner_check.py"

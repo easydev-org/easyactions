@@ -11,6 +11,11 @@ Reusable GitHub Actions for this organisation. Each directory is one action, use
 | action | what it does |
 |---|---|
 | [`log-stream`](log-stream/) | Runs a command and publishes its output to a check run while it runs, so a build can be followed live instead of after it finishes. Also the one place a cancel is turned into a real process-tree kill. |
+| [`runner-check`](runner-check/) | Asserts `/dev/kvm` can be opened and that the job has the disk it declared, freeing the hosted toolchains first when it does not. Replaces twenty-six copies of the same two commands. |
+
+Both are exercised by [`selftest.yml`](.github/workflows/selftest.yml) on every push - the
+failure paths included, because an action whose refusal has never been executed is an action
+whose refusal does not work.
 
 ## Why a separate repository
 
