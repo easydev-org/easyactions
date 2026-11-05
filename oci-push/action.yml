@@ -58,13 +58,16 @@ inputs:
 outputs:
   tag:
     description: 'The tag that was pushed.'
+    value: ${{ steps.push.outputs.tag }}
   reference:
     description: 'The full reference, registry/repo:tag.'
+    value: ${{ steps.push.outputs.reference }}
 
 runs:
   using: 'composite'
   steps:
     - name: push
+      id: push
       shell: bash
       env:
         INPUT_PATH: ${{ inputs.path }}

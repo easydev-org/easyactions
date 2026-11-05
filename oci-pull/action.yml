@@ -41,15 +41,19 @@ inputs:
 outputs:
   path:
     description: 'The file that was written.'
+    value: ${{ steps.pull.outputs.path }}
   name:
     description: 'Its basename.'
+    value: ${{ steps.pull.outputs.name }}
   digest:
     description: 'The blob digest the manifest named.'
+    value: ${{ steps.pull.outputs.digest }}
 
 runs:
   using: 'composite'
   steps:
     - name: pull
+      id: pull
       shell: bash
       env:
         INPUT_TAG: ${{ inputs.tag }}
