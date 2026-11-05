@@ -1,0 +1,61 @@
+name: 'OCI pull'
+description: >-
+  Pull an OCI artifact from a container registry, resuming the blob across resets instead of
+  starting a multi-gigabyte transfer over.
+author: easydev-org
+branding:
+  icon: download-cloud
+  color: blue
+
+inputs:
+  tag:
+    description: 'The tag to pull.'
+    required: true
+  dest:
+    description: 'Directory to write into.'
+    required: false
+    default: 'out'
+  path:
+    description: >-
+      The file name to write. Defaults to the publisher's title annotation, then to
+      <tag>.qcow2.
+    required: false
+    default: ''
+  registry:
+    description: 'Registry host.'
+    required: false
+    default: 'ghcr.io'
+  repository:
+    description: >-
+      owner/name to pull from. Defaults to $GITHUB_REPOSITORY lowercased; a registry that is
+      not GitHub sets neither, so it is passed explicitly there.
+    required: false
+    default: ''
+  token:
+    description: >-
+      Token for the registry. Defaults to $GITHUB_TOKEN, which is enough for a public
+      package and is scoped to a pull token for a private one.
+    required: false
+    default: ''
+
+outputs:
+  path:
+    description: 'The file that was written.'
+  name:
+    description: 'Its basename.'
+  digest:
+    description: 'The blob digest the manifest named.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: pull
+      shell: bash
+      env:
+        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_DEST: ${{ inputs.dest }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_REGISTRY: ${{ inputs.registry }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        GITHUB_TOKEN: ${{ inputs.token || github.token }}
+      run: python3 "$GITHUB_ACTION_PATH/oci_pull.py"

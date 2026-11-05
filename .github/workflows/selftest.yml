@@ -81,3 +81,69 @@ jobs:
             echo "a command that exited 7 did not fail the step"; exit 1
           fi
           echo "log-stream propagated the exit code, as it should"
+
+  oci-roundtrip:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # A PUSH AND A PULL OF THE SAME BYTES, COMPARED. The two actions are only useful
+      # together, and the interesting failures are the ones in between: a path oras
+      # refuses, a token the registry will not exchange, a blob that arrives short.
+      - name: make a file to push
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          head -c 1200000 /dev/urandom > out/roundtrip.bin
+          sha256sum out/roundtrip.bin
+
+      - name: push it
+        id: push
+        uses: ./oci-push
+        with:
+          path: out/roundtrip.bin
+          kind: selftest-roundtrip
+          repository: ${{ github.repository }}
+          media-type: application/vnd.easydev.selftest.bin
+          token: ${{ github.token }}
+
+      - name: pull it back
+        id: pull
+        uses: ./oci-pull
+        with:
+          tag: ${{ steps.push.outputs.tag }}
+          dest: back
+          path: roundtrip.bin
+          repository: ${{ github.repository }}
+          token: ${{ github.token }}
+
+      - name: it is the same file
+        run: |
+          set -euo pipefail
+          a=$(sha256sum out/roundtrip.bin | cut -d' ' -f1)
+          b=$(sha256sum back/roundtrip.bin | cut -d' ' -f1)
+          echo "pushed $a"
+          echo "pulled $b"
+          [ "$a" = "$b" ] || { echo "the artifact that came back is not the one that went out"; exit 1; }
+          echo "roundtrip intact"
+
+      - name: pulling a tag that does not exist fails
+        id: missing
+        continue-on-error: true
+        uses: ./oci-pull
+        with:
+          tag: this-tag-was-never-published
+          dest: nowhere
+          repository: ${{ github.repository }}
+          token: ${{ github.token }}
+
+      - name: that failure was a failure
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.missing.outcome }}" != "failure" ]; then
+            echo "pulling a missing tag did not fail the step"; exit 1
+          fi
+          echo "oci-pull refused a tag that does not exist, as it should"

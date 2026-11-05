@@ -1,0 +1,79 @@
+name: 'OCI push'
+description: >-
+  Push a file to a container registry as an OCI artifact, tagged and annotated, with the tag
+  written to the step output so the next job can pull it.
+author: easydev-org
+branding:
+  icon: upload-cloud
+  color: green
+
+inputs:
+  path:
+    description: 'The file to push.'
+    required: true
+  tag:
+    description: >-
+      The exact tag. Leave empty to build one from kind and the clock, which is what a
+      bake wants: "which build is this" has to stay answerable, and a moving tag would
+      make that untrue.
+    required: false
+    default: ''
+  kind:
+    description: >-
+      What this artifact is - windows-base, macos15-desktop. Used as the tag prefix and
+      as the dev.easydev.kind annotation. Optional when tag is given.
+    required: false
+    default: ''
+  stamp:
+    description: 'Append -<UTC timestamp> to a tag built from kind.'
+    required: false
+    default: 'true'
+  registry:
+    description: 'Registry host.'
+    required: false
+    default: 'ghcr.io'
+  repository:
+    description: >-
+      owner/name to push into. Defaults to $GITHUB_REPOSITORY lowercased; a registry that
+      is not GitHub sets neither, so it is passed explicitly there.
+    required: false
+    default: ''
+  media-type:
+    description: >-
+      The artifact type recorded on the manifest. Callers that store something other than
+      a disk pass their own; the default matches the qcow2 disks this organisation bakes.
+    required: false
+    default: 'application/vnd.easydev.disk.qcow2'
+  annotations:
+    description: >-
+      Extra manifest annotations, one key=value per line. Values are read here rather than
+      interpolated by a shell, so a value with spaces or quotes survives.
+    required: false
+    default: ''
+  token:
+    description: 'Token for the registry. Defaults to $GITHUB_TOKEN.'
+    required: false
+    default: ''
+
+outputs:
+  tag:
+    description: 'The tag that was pushed.'
+  reference:
+    description: 'The full reference, registry/repo:tag.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: push
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_TAG: ${{ inputs.tag }}
+        INPUT_KIND: ${{ inputs.kind }}
+        INPUT_STAMP: ${{ inputs.stamp }}
+        INPUT_REGISTRY: ${{ inputs.registry }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_MEDIA_TYPE: ${{ inputs.media-type }}
+        INPUT_ANNOTATIONS: ${{ inputs.annotations }}
+        GITHUB_TOKEN: ${{ inputs.token || github.token }}
+      run: python3 "$GITHUB_ACTION_PATH/oci_push.py"
