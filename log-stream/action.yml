@@ -25,6 +25,18 @@ inputs:
       Name of the check run. Defaults to the job name, so one step per job needs no configuration.
     required: false
     default: ''
+  continue-on-failure:
+    description: >-
+      Report the command's exit code in the check run but do NOT fail the step. For a caller that
+      makes its own judgement from what the command left behind.
+
+      macos15's clean is the reason this exists: the process can be killed by a SIGTERM after it
+      has finished its work (run 42919582582 exited 241 half a second after `the guest powered
+      off`), and the workflow's own shell cannot make the verdict because the same signal kills
+      that shell too. A separate step reads out/clean-macos.txt instead, and it can only run if
+      this step did not fail.
+    required: false
+    default: 'false'
   interval:
     description: >-
       Seconds between updates. Every line would be one API call per line — far too many; a build
@@ -62,6 +74,9 @@ runs:
           exit 2
         fi
         args=(--interval "$INPUT_INTERVAL" --max-bytes "$INPUT_MAX_BYTES")
+        if [ "${INPUT_CONTINUE_ON_FAILURE:-false}" = "true" ]; then
+          args+=(--continue-on-failure)
+        fi
         if [ -n "${INPUT_NAME}" ]; then args+=(--name "$INPUT_NAME"); fi
 
         # exec, SO THE STREAMER IS THE PROCESS THE RUNNER CANCELS.
