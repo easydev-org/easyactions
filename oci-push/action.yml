@@ -83,6 +83,22 @@ inputs:
     required: false
     default: ''
 
+  distinct-digest:
+    description: >-
+      A sha256 the artifact must NOT equal. The companion to `distinct-from`, for a caller whose
+      baseline file no longer exists when it publishes.
+
+      macos15's desktop stage MOVES the disk it was given (`working_copy` moves by default,
+      because the published copy is still in the registry and copying 28 GiB buys nothing), so by
+      the time the workflow pushes there is no input file left to hash. The stage hashes it
+      before it moves anything and passes the number here.
+
+      A digest that is the wrong length or not hex is an error: a typo must not silently disable
+      the check, because this check is what turned "sixteen walkthrough steps answered" into a
+      published artifact that was byte-identical to its own input.
+    required: false
+    default: ''
+
   check-name:
     description: 'Name of the check run the progress is published to'
     required: false
@@ -111,6 +127,7 @@ runs:
         INPUT_REPOSITORY: ${{ inputs.repository }}
         INPUT_MEDIA_TYPE: ${{ inputs.media-type }}
         INPUT_DISTINCT_FROM: ${{ inputs.distinct-from }}
+        INPUT_DISTINCT_DIGEST: ${{ inputs.distinct-digest }}
         INPUT_ANNOTATIONS: ${{ inputs.annotations }}
         GITHUB_TOKEN: ${{ inputs.token || github.token }}
       # STREAMED, BECAUSE A SILENT TRANSFER IS INDISTINGUISHABLE FROM A HANG.

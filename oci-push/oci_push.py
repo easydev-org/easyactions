@@ -102,6 +102,38 @@ def sha256_of(path: str) -> str:
     return digest.hexdigest()
 
 
+def refuse_if_digest_matches(path: str, digest: str) -> None:
+    """Fail when the artifact's digest equals one the caller recorded earlier.
+
+    THE FILE-FREE HALF OF `distinct-from`. A stage that MOVES its input - macos15/desktop.py
+    does, because the published disk is still in the registry - has no baseline left to hash at
+    push time, so it hashes the input before moving it and passes the number.
+
+    A malformed digest is an ERROR rather than a skip. The whole point of this check is that a
+    stage which reports success must not publish its own input, and a check that a typo can
+    disable is not a check.
+    """
+    if not digest:
+        return
+    cleaned = digest.strip().lower()
+    if cleaned.startswith("sha256:"):
+        cleaned = cleaned[len("sha256:"):]
+    if len(cleaned) != 64 or any(c not in "0123456789abcdef" for c in cleaned):
+        raise Failed(
+            f"distinct-digest is {digest!r}, which is not a sha256. A malformed digest would "
+            f"silently disable the check that stops a stage publishing its own input.")
+    ours = sha256_of(path)
+    if ours == cleaned:
+        raise Failed(
+            f"=== {os.path.basename(path)} IS THE SAME BYTES AS THIS STAGE'S INPUT ===\n"
+            f"  sha256 {ours}\n"
+            f"  The stage was asked to change a disk and its output is the disk it was given.\n"
+            f"  Either it did nothing, or its writes went somewhere that is never published (a\n"
+            f"  second overlay that gets deleted is the usual cause). Every later stage would\n"
+            f"  then test the input under the output's name.")
+    log(f"  differs from the recorded input ({ours[:12]} vs {cleaned[:12]})")
+
+
 def refuse_if_unchanged(path: str, other: str) -> None:
     """Fail when the artifact is byte-identical to the file it was made from.
 
@@ -282,6 +314,7 @@ def main() -> int:
     media_type = env("INPUT_MEDIA_TYPE", "application/vnd.easydev.disk.qcow2")
     extra = env("INPUT_ANNOTATIONS")  # newline-separated key=value
     distinct_from = env("INPUT_DISTINCT_FROM")
+    distinct_digest = env("INPUT_DISTINCT_DIGEST")
 
     try:
         if not path:
@@ -324,6 +357,7 @@ def main() -> int:
 
         # BEFORE the push: a layer oras already has is a truth that cannot be taken back.
         refuse_if_unchanged(path, distinct_from)
+        refuse_if_digest_matches(path, distinct_digest)
 
         oras()
         login(registry)
