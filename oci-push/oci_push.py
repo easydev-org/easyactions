@@ -91,6 +91,58 @@ def resolve(path: str) -> str:
     return matches[0]
 
 
+def sha256_of(path: str) -> str:
+    """The file's digest, streamed so a 28 GiB disk does not have to fit in memory."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def refuse_if_unchanged(path: str, other: str) -> None:
+    """Fail when the artifact is byte-identical to the file it was made from.
+
+    A STAGE THAT CHANGES A DISK MUST PRODUCE A DIFFERENT DISK. When it does not, either the
+    stage did nothing or its writes went somewhere that was never published - and oras will
+    happily reuse the existing content layer and report a successful push either way:
+
+        [oci-push] Exists    f7bd5255e8b0 macos15-desktop.qcow2
+        [oci-push] Uploaded  20ce9bcf2e59 macos15-desktop
+
+    That is macos15-desktop after its desktop stage: sixteen walkthrough steps answered, the
+    wizard finished, the desktop reached - and the tag resolved to the SAME bytes as
+    macos15-setup. The next stage booted it, found the Setup Assistant still on screen, and the
+    failure read as "the wizard was never driven".
+
+    IT RUNS BEFORE THE PUSH, because a push that has already reused a layer cannot be undone,
+    and because a caller reading the log needs this line rather than a summary three jobs later.
+    """
+    if not other:
+        return
+    if not os.path.isfile(other):
+        # A MISSING BASELINE IS A CALLER BUG, NOT A REASON TO SKIP THE CHECK. The caller named
+        # a file; if it is not there, "distinct from nothing" is not a pass.
+        raise Failed(
+            f"distinct-from names {other}, which does not exist - so whether this artifact is "
+            f"different cannot be answered")
+    ours, theirs = sha256_of(path), sha256_of(other)
+    if ours == theirs:
+        name, base = os.path.basename(path), os.path.basename(other)
+        raise Failed(
+            f"=== {name} IS BYTE-IDENTICAL TO {base} ===\n"
+            f"  sha256 {ours}\n"
+            f"  This stage produces a disk, and its output is the disk it was given. Either the\n"
+            f"  stage did not run, or it wrote somewhere that is never published (an overlay that\n"
+            f"  was not flattened is the usual cause). Publishing it would give every later stage\n"
+            f"  a tag that resolves to the stage's INPUT, and they would fail on a disk that\n"
+            f"  looks like a wizard nobody drove."
+        )
+    log(f"  differs from {os.path.basename(other)} ({ours[:12]} vs {theirs[:12]})")
+
+
 def utc_stamp() -> str:
     return time.strftime("%Y%m%d-%H%M%S", time.gmtime())
 
@@ -229,6 +281,7 @@ def main() -> int:
     stamp = env("INPUT_STAMP", "true").lower() in ("1", "true", "yes")
     media_type = env("INPUT_MEDIA_TYPE", "application/vnd.easydev.disk.qcow2")
     extra = env("INPUT_ANNOTATIONS")  # newline-separated key=value
+    distinct_from = env("INPUT_DISTINCT_FROM")
 
     try:
         if not path:
@@ -268,6 +321,9 @@ def main() -> int:
                 continue
             key, _, value = line.partition("=")
             annotations[key.strip()] = value.strip()
+
+        # BEFORE the push: a layer oras already has is a truth that cannot be taken back.
+        refuse_if_unchanged(path, distinct_from)
 
         oras()
         login(registry)

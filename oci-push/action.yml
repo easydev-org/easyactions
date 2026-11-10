@@ -57,6 +57,32 @@ inputs:
     required: false
     default: ''
 
+  distinct-from:
+    description: >-
+      A file this artifact must NOT be byte-identical to. Empty means no check.
+
+      FOR STAGES THAT ARE SUPPOSED TO CHANGE A DISK. A stage that boots a disk, does work and
+      publishes it is a stage whose OUTPUT IS DIFFERENT BY CONSTRUCTION; if the output is the
+      same bytes as the input, the stage did not do what it claims, and every downstream job
+      will silently test the wrong disk.
+
+      That is not hypothetical. macos15's desktop stage ran to green - sixteen walkthrough
+      steps, the wizard answered, the desktop reached - and published an artifact whose content
+      layer digest was IDENTICAL to the setup disk it had been given:
+
+          [oci-push] Exists    f7bd5255e8b0 macos15-desktop.qcow2
+          [oci-push] Uploaded  20ce9bcf2e59 macos15-desktop
+
+      oras saw an existing layer and reused it, which is a correct optimisation and a terrible
+      silence. `macos15-desktop` and `macos15-setup` then resolved to the same bytes, and the
+      ssh stage booted a disk still sitting in the Setup Assistant - which looked, from the
+      inside, exactly like a wizard nobody had driven (VoiceOver overlay and all).
+
+      Comparing digests HERE and failing is the difference between a stage that reports success
+      and a stage that succeeded.
+    required: false
+    default: ''
+
   check-name:
     description: 'Name of the check run the progress is published to'
     required: false
@@ -84,6 +110,7 @@ runs:
         INPUT_REGISTRY: ${{ inputs.registry }}
         INPUT_REPOSITORY: ${{ inputs.repository }}
         INPUT_MEDIA_TYPE: ${{ inputs.media-type }}
+        INPUT_DISTINCT_FROM: ${{ inputs.distinct-from }}
         INPUT_ANNOTATIONS: ${{ inputs.annotations }}
         GITHUB_TOKEN: ${{ inputs.token || github.token }}
       # STREAMED, BECAUSE A SILENT TRANSFER IS INDISTINGUISHABLE FROM A HANG.
