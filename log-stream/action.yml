@@ -62,6 +62,10 @@ runs:
         INPUT_COMMAND: ${{ inputs.command }}
         INPUT_NAME: ${{ inputs.name }}
         INPUT_INTERVAL: ${{ inputs.interval }}
+        # AN ALIAS, BECAUSE THE INPUT NAME HAS A HYPHEN. `continue-on-failure` arrives as
+        # `INPUT_CONTINUE-ON-FAILURE`, which no shell can expand - so the value is copied here
+        # under a name that can be read. See the note at the `args+=(--continue-on-failure)` line.
+        LC_CONTINUE_ON_FAILURE: ${{ inputs.continue-on-failure }}
         INPUT_MAX_BYTES: ${{ inputs.max_bytes }}
       run: |
         set -euo pipefail
@@ -74,7 +78,16 @@ runs:
           exit 2
         fi
         args=(--interval "$INPUT_INTERVAL" --max-bytes "$INPUT_MAX_BYTES")
-        if [ "${INPUT_CONTINUE_ON_FAILURE:-false}" = "true" ]; then
+        # THE HYPHEN IS THE PROBLEM. Actions builds the env name by uppercasing and replacing
+        # spaces with underscores - it does NOT touch a hyphen - so an input named
+        # `continue-on-failure` arrives as `INPUT_CONTINUE-ON-FAILURE`, which is not a name a POSIX
+        # shell can expand. `${INPUT_CONTINUE_ON_FAILURE:-false}` therefore reads `false` no matter
+        # what the caller passes, and the step failed on the child's exit code even with
+        # `continue-on-failure: "true"` set. Measured on macos15 run 42922887078: the flag was in
+        # the workflow, `log-stream: finished failure` was printed, and the next step never ran.
+        #
+        # env (see the `env:` block above) is how it arrives with a name that works.
+        if [ "${LC_CONTINUE_ON_FAILURE:-false}" = "true" ]; then
           args+=(--continue-on-failure)
         fi
         if [ -n "${INPUT_NAME}" ]; then args+=(--name "$INPUT_NAME"); fi
