@@ -20,6 +20,32 @@ The Actions log of a running step is not readable until the step ends. A check r
 `output.text` is. A bake that takes ninety minutes and fails at minute twelve is worth
 following at minute thirteen.
 
+## No dependency beyond curl
+
+THIS USED TO BE `log_stream.py`, AND THE IMAGE THAT NEEDS LIVE LOGS MOST IS THE ONE WITHOUT AN
+INTERPRETER. `easydev-org/easyvm` removed `python3` on purpose - its driver is Go and speaks QMP
+directly - so this action refused to start in exactly the place a three-hour leg lives.
+
+`.github/log-stream.sh` does the same job with two HTTP requests and no `jq` either: the check-run id
+is read out of a response the script generated itself. THE ENTIRE DEPENDENCY IS `curl`.
+
+| was | now | why |
+|---|---|---|
+| `python3 log_stream.py` | `sh lib/log_stream.sh` | the caller's image has no interpreter |
+| `json.dumps` | `sed` | no `jq`, and the payload is one known shape |
+| `start_new_session` + `os.killpg` | `kill_tree` over `pgrep -P` | `setsid` forks, so `$!` is the wrapper |
+| argv flags | `INPUT_*` environment | that is how a composite action passes inputs |
+
+FOUR BUGS WERE FOUND BY RUNNING IT, AND NONE WOULD HAVE FAILED LOUDLY IN CI:
+
+- the id regex required no space, and GitHub answers `{"id": 4242` - the check run was created, the
+  script decided it had failed, and the command ran unpublished
+- a raw newline in the JSON: a string may not contain a control character, and a log is mostly
+  newlines, so every update was refused once per interval with nothing in the log to say so
+- a raw tab, the same way
+- `set -m` prints `can't access tty` in a non-interactive shell, and a shell option is not a property
+  of the child
+
 ## Inputs
 
 | input | default | |

@@ -36,5 +36,10 @@ here is the one with the process-group fix.
 Every action here that runs a command must be cancellable, and "cancellable" means the whole
 process tree stops - not that the step's log stops. `gh run cancel` is a signal to the runner,
 the runner signals the step, and an action that kills only its direct child leaves the real
-work running with its output cut off. `log-stream` is the worked example: `start_new_session=True`
-and `os.killpg`, and SIGTERM, SIGINT and SIGHUP all handled.
+work running with its output cut off. `log-stream` is the worked example: it runs the command as a
+background job, and its TERM/INT/HUP trap walks the tree with `pgrep -P` before killing - because
+`kill $pid` reaches the shell that owns the daemon, and the daemon owns the machine.
+
+IT ALSO RUNS UNDER `exec`, SO THE STEP'S PROCESS IS THE STREAMER. A non-interactive shell has no
+SIGTERM trap and no job-control forwarding: the runner signals it, it dies, the streamer is orphaned
+onto PID 1, and the kill-tree code above never runs.

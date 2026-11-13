@@ -55,70 +55,32 @@ runs:
   steps:
     - name: stream output
       shell: bash
+      # THE ENVIRONMENT IS HOW A COMPOSITE ACTION PASSES INPUTS, because neither the caller's env nor
+      # the `github` context reaches this file.
+      #
+      # `INPUT_CONTINUE-ON-FAILURE` IS COPIED TO A NAME A SHELL CAN EXPAND. The input's own name has a
+      # hyphen, so the runner sets `INPUT_CONTINUE-ON-FAILURE`, which is not a valid shell variable -
+      # the Python version read it through an argv flag built in bash, and this keeps the alias.
       env:
-        # The token arrives as an input, because neither the caller's env nor the `github` context
-        # reaches this file.
-        GITHUB_TOKEN: ${{ inputs.token }}
+        INPUT_TOKEN: ${{ inputs.token }}
         INPUT_COMMAND: ${{ inputs.command }}
         INPUT_NAME: ${{ inputs.name }}
         INPUT_INTERVAL: ${{ inputs.interval }}
-        # AN ALIAS, BECAUSE THE INPUT NAME HAS A HYPHEN. `continue-on-failure` arrives as
-        # `INPUT_CONTINUE-ON-FAILURE`, which no shell can expand - so the value is copied here
-        # under a name that can be read. See the note at the `args+=(--continue-on-failure)` line.
-        LC_CONTINUE_ON_FAILURE: ${{ inputs.continue-on-failure }}
         INPUT_MAX_BYTES: ${{ inputs.max_bytes }}
+        LC_CONTINUE_ON_FAILURE: ${{ inputs.continue-on-failure }}
       run: |
         set -euo pipefail
-        # The script sits IN the action's own directory. dirname would step out of it, which is
-        # how the first version pointed at a file that does not exist — and then reported it as an
-        # exit code rather than a missing path, which took a log dig to find.
-        script="$GITHUB_ACTION_PATH/../lib/log_stream.py"
+        # THE SCRIPT SITS IN THE ACTION'S OWN CHECKOUT, beside this file's parent. `$GITHUB_ACTION_PATH`
+        # is where that is; a relative path would be resolved against the CALLER's working directory.
+        script="$GITHUB_ACTION_PATH/../lib/log_stream.sh"
         if [ ! -f "$script" ]; then
           echo "log-stream: $script is missing from the action checkout" >&2
           exit 2
         fi
-        args=(--interval "$INPUT_INTERVAL" --max-bytes "$INPUT_MAX_BYTES")
-        # THE HYPHEN IS THE PROBLEM. Actions builds the env name by uppercasing and replacing
-        # spaces with underscores - it does NOT touch a hyphen - so an input named
-        # `continue-on-failure` arrives as `INPUT_CONTINUE-ON-FAILURE`, which is not a name a POSIX
-        # shell can expand. `${INPUT_CONTINUE_ON_FAILURE:-false}` therefore reads `false` no matter
-        # what the caller passes, and the step failed on the child's exit code even with
-        # `continue-on-failure: "true"` set. Measured on macos15 run 42922887078: the flag was in
-        # the workflow, `log-stream: finished failure` was printed, and the next step never ran.
+        # `exec` SO THIS SHELL IS REPLACED RATHER THAN PARENTING THE STREAMER.
         #
-        # env (see the `env:` block above) is how it arrives with a name that works.
-        if [ "${LC_CONTINUE_ON_FAILURE:-false}" = "true" ]; then
-          args+=(--continue-on-failure)
-        fi
-        if [ -n "${INPUT_NAME}" ]; then args+=(--name "$INPUT_NAME"); fi
-
-        # exec, SO THE STREAMER IS THE PROCESS THE RUNNER CANCELS.
-        #
-        # WITHOUT IT, A CANCEL NEVER REACHED log_stream.py AT ALL, and the step ran to its own
-        # timeout instead of stopping. Measured on macos15 run 42000179043: cancelled twice,
-        # at 10:31 and 10:39, and at 10:41 the `enable Remote Login` step was still on its
-        # "waiting up to 900s for the desktop" line with the check run's output frozen. It
-        # would have ended at 10:48:14 on its own timeout, nine minutes after the first
-        # request.
-        #
-        # THE PROCESS TREE EXPLAINS IT. `shell: bash` makes the runner start
-        #
-        #     bash --noprofile --norc -e -o pipefail {0}     <- the step's process
-        #       └─ python3 log_stream.py                     <- has _kill_tree installed
-        #            └─ bash -c "<the command>"              <- start_new_session=True
-        #
-        # and the runner signals THE STEP'S PROCESS, which is that outer bash. A
-        # non-interactive bash has no trap for SIGTERM and no job control forwarding: it dies,
-        # python is orphaned onto PID 1, and every signal handler in log_stream.py - the whole
-        # _kill_tree path, written for exactly this - is never called. python keeps reading a
-        # child that keeps running qemu.
-        #
-        # exec REPLACES that bash with python, so python IS the step's process and the first
-        # signal lands on the handler:
-        #
-        #     python3 log_stream.py                          <- the step's process
-        #       └─ bash -c "<the command>"                   <- killed as a process group
-        #
-        # The `set -euo pipefail` and the missing-script check above all run before this line,
-        # so nothing is skipped by the replacement.
-        exec python3 "$script" "${args[@]}" -- bash -c "$INPUT_COMMAND"
+        # THE RUNNER SIGNALS THE STEP'S PROCESS. A non-interactive bash has no SIGTERM trap and no job
+        # control forwarding: it dies, the streamer is orphaned onto PID 1, and its own kill-tree code
+        # never runs - which is how a cancelled leg used to leave qemu holding /dev/kvm. With `exec`
+        # the streamer IS the step's process and the first signal lands on its trap.
+        exec sh "$script"
