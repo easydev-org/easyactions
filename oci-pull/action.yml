@@ -57,25 +57,32 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: pull
-      id: pull
+    - name: oci-pull
       shell: bash
+      # THE ENVIRONMENT IS HOW A COMPOSITE ACTION PASSES INPUTS: neither the caller's env nor the
+      # `github` context reaches this file. A hyphenated input name (`disk-gb`) becomes
+      # `INPUT_DISK-GB`, which no shell can expand, so the script reads the names defined here.
+      #
+      # AN INPUT WITH A HYPHEN IS WHERE THE ALIAS MATTERS, and the note above says why.
       env:
         INPUT_TAG: ${{ inputs.tag }}
         INPUT_DEST: ${{ inputs.dest }}
         INPUT_PATH: ${{ inputs.path }}
         INPUT_REGISTRY: ${{ inputs.registry }}
         INPUT_REPOSITORY: ${{ inputs.repository }}
-        GITHUB_TOKEN: ${{ inputs.token || github.token }}
-      # STREAMED, BECAUSE A SILENT TRANSFER IS INDISTINGUISHABLE FROM A HANG.
-      #
-      # This action moves 28 GiB in the macOS stages and printed nothing until it
-      # finished, so a running job had no output at all - the Actions log cannot be
-      # read until the step ends, and there was nothing else to read. log_stream.py
-      # publishes the same lines to a check run while they happen.
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_CHECK_NAME: ${{ inputs.check-name }}
       run: |
         set -euo pipefail
-        python3 "$GITHUB_ACTION_PATH/../lib/log_stream.py" \
-          --name "${{ inputs.check-name }}" --interval 20 \
-          -- python3 "$GITHUB_ACTION_PATH/oci_pull.py"
-
+        # THE SCRIPT SITS IN THE ACTION'S OWN CHECKOUT, one level up from this directory.
+        # `$GITHUB_ACTION_PATH` is where that is; a relative path would resolve against the CALLER's
+        # working directory.
+        script="$GITHUB_ACTION_PATH/../lib/oci_pull.sh"
+        if [ ! -f "$script" ]; then
+          echo "oci-pull: $script is missing from the action checkout" >&2
+          exit 2
+        fi
+        # `exec` SO THIS SHELL IS THE SCRIPT RATHER THAN ITS PARENT: the runner signals the step's
+        # process, and a non-interactive bash has no SIGTERM trap - it would die and orphan the work
+        # onto PID 1, where no handler of its own can run.
+        exec sh "$script"

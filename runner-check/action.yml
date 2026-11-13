@@ -45,26 +45,29 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: check
+    - name: runner-check
       shell: bash
+      # THE ENVIRONMENT IS HOW A COMPOSITE ACTION PASSES INPUTS: neither the caller's env nor the
+      # `github` context reaches this file. A hyphenated input name (`disk-gb`) becomes
+      # `INPUT_DISK-GB`, which no shell can expand, so the script reads the names defined here.
+      #
+      # AN INPUT WITH A HYPHEN IS WHERE THE ALIAS MATTERS, and the note above says why.
       env:
         INPUT_KVM: ${{ inputs.kvm }}
         INPUT_DISK_GB: ${{ inputs.disk-gb }}
         INPUT_PRUNE: ${{ inputs.prune }}
-        INPUT_TOKEN: ${{ inputs.token }}
-        GITHUB_TOKEN: ${{ inputs.token || github.token }}
-      # STREAMED, FOR THE SAME REASON THE OTHERS ARE: the output has to be readable while
-      # the step runs. This one is short - a few seconds of `df` and an open of /dev/kvm -
-      # but "short" is not a property this action controls: `docker system prune` inside it
-      # has been measured at 984 seconds, and a prune that hangs with no output is the
-      # failure this action was written to report.
+        INPUT_CHECK_NAME: ${{ inputs.check-name }}
       run: |
         set -euo pipefail
-        if [ -z "$INPUT_TOKEN" ]; then
-          # NO TOKEN, NO CHECK RUN. Run the check directly; its output goes to the step log,
-          # which is what every caller had before this existed.
-          exec python3 "$GITHUB_ACTION_PATH/runner_check.py"
+        # THE SCRIPT SITS IN THE ACTION'S OWN CHECKOUT, one level up from this directory.
+        # `$GITHUB_ACTION_PATH` is where that is; a relative path would resolve against the CALLER's
+        # working directory.
+        script="$GITHUB_ACTION_PATH/../lib/runner_check.sh"
+        if [ ! -f "$script" ]; then
+          echo "runner-check: $script is missing from the action checkout" >&2
+          exit 2
         fi
-        python3 "$GITHUB_ACTION_PATH/../lib/log_stream.py" \
-          --name "${{ inputs.check-name }}" --interval 5 \
-          -- python3 "$GITHUB_ACTION_PATH/runner_check.py"
+        # `exec` SO THIS SHELL IS THE SCRIPT RATHER THAN ITS PARENT: the runner signals the step's
+        # process, and a non-interactive bash has no SIGTERM trap - it would die and orphan the work
+        # onto PID 1, where no handler of its own can run.
+        exec sh "$script"
